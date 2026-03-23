@@ -139,12 +139,13 @@ Generates three files in `models/`:
 - ESM-2 context window is 1,022 tokens; longer proteins use sliding window mean-pooling
 - Structural context is relative to characterised T. gondii proteins; truly novel folds may not be detected
 - Invasion predictions trained on hyperLOPIT compartment labels; may be less accurate for non-Toxoplasma species
+- ESM-2 was trained on UniRef50 which includes apicomplexan proteins, so the embeddings aren't fully independent of the training labels
 
 ## Citation
 
 If you use ApiPred, please cite:
 
-> McCabe J et al. (2026) Protein language model embeddings reveal the structural logic of apicomplexan host cell invasion. *In preparation.*
+> McCabe, JS. (2026) Protein language model embeddings reveal the structural logic of apicomplexan host cell invasion. *In preparation.*
 
 And the underlying methods:
 - Lin Z et al. (2023) Evolutionary-scale prediction of atomic-level protein structure with a language model. *Science* 379:1123-1130.
