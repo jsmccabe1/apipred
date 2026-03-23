@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="apipred_logo.png" alt="apipred logo" width="300">
+  <img src="apipred_logo.png" alt="ApiPred logo" width="700">
 </p>
 
-# apipred
+# ApiPred
 
 **Predict essential genes and invasion machinery in apicomplexan proteomes from sequence alone.**
 
-apipred uses ESM-2 protein language model embeddings to predict protein essentiality, invasion compartment membership, and structural context for any apicomplexan species, trained on *Toxoplasma gondii* experimental data and validated across *Plasmodium berghei*.
+ApiPred uses ESM-2 protein language model embeddings to predict protein essentiality, invasion compartment membership, and structural context for any apicomplexan species, trained on *Toxoplasma gondii* experimental data and validated across *Plasmodium berghei*.
 
 ## How it works
 
@@ -33,7 +33,7 @@ graph LR
 ## Validation
 
 <p align="center">
-  <img src="validation.png" alt="apipred validation" width="700">
+  <img src="validation.png" alt="ApiPred validation" width="700">
 </p>
 
 *(A) Cross-species transfer: model trained on T. gondii CRISPR data predicts P. berghei experimental growth rates across 1,136 ortholog pairs (Spearman rho = 0.40). (B) Within-species 5-fold cross-validation on 3,796 T. gondii proteins (rho = 0.56). (C) Per-compartment essentiality: invasion compartments (red) are dispensable in culture while housekeeping machinery (ribosomes, proteasome) is essential, confirming biological coherence.*
@@ -125,7 +125,7 @@ This generates three files in `models/`:
 
 ## Citation
 
-If you use apipred, please cite:
+If you use ApiPred, please cite:
 
 > McCabe J et al. (2026) Protein language model embeddings reveal the structural logic of apicomplexan host cell invasion. *In preparation.*
 

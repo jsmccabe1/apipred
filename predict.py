@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-apipred - Apicomplexan protein function predictor
+ApiPred - Apicomplexan protein function predictor
 ====================================================
 
 Multi-species, compartment-aware, structurally contextualised predictions
 for any apicomplexan proteome from ESM-2 embeddings.
 
-For each protein, apipred predicts:
+For each protein, ApiPred predicts:
   - Essentiality (CRISPR fitness score)
   - Subcellular compartment
   - Invasion machinery membership
@@ -95,7 +95,7 @@ def parse_fasta(fasta_path):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="apipred: predict essential genes, compartments, and structural "
+        description="ApiPred: predict essential genes, compartments, and structural "
                     "context in apicomplexan proteomes using ESM-2 embeddings"
     )
     parser.add_argument("--input", required=True, help="Input FASTA file")
@@ -234,7 +234,7 @@ def main():
 
     # Summary
     print(f"\n{'='*60}")
-    print(f"apipred results: {args.output}")
+    print(f"ApiPred results: {args.output}")
     print(f"{'='*60}")
     print(f"  Proteins analysed:     {len(df)}")
     if has_models:

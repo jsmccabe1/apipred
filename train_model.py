@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Train apipred models from T. gondii data.
+Train ApiPred models from T. gondii data.
 
 Generates three files in models/:
   - essentiality_model.joblib  (regressor + classifier for CRISPR scores)
@@ -38,7 +38,7 @@ INVASION_COMPARTMENTS = {
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train apipred models")
+    parser = argparse.ArgumentParser(description="Train ApiPred models")
     parser.add_argument("--data-dir", required=True, help="Path to Apicomplexa project directory")
     parser.add_argument("--output-dir", default=None, help="Output directory for models")
     parser.add_argument("--fast", action="store_true", help="Use fewer estimators for faster training")
@@ -181,7 +181,7 @@ def main():
     print(f"  Saved: {output_dir / 'reference_db.npz'}")
 
     print(f"\n{'='*60}")
-    print(f"apipred model training complete")
+    print(f"ApiPred model training complete")
     print(f"{'='*60}")
     print(f"  Essentiality: rho={rho:.3f}, AUC={auc:.3f}")
     print(f"  Invasion: AUC={inv_auc:.3f}")
