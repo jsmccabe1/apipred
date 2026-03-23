@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apipred_logo.png" alt="apipred logo" width="300">
+  <img src="apipred_logo.png" alt="apipred logo" width="700">
 </p>
 
 # apipred
