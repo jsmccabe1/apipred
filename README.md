@@ -12,13 +12,13 @@ ApiPred uses ESM-2 protein language model embeddings to predict protein essentia
 
 ```mermaid
 graph LR
-    A[FASTA proteome] --> B[ESM-2 embedding<br/>1,280 dims per protein]
+    A[FASTA proteome] --> B[ESM-2 embedding<br>1,280 dims per protein]
     B --> C[Essentiality model]
     B --> D[Invasion model]
     B --> E[Reference database]
-    C --> F[CRISPR fitness score<br/>Essential / Important / Dispensable]
-    D --> G[Invasion probability<br/>Compartment prediction]
-    E --> H[Top 3 similar known proteins<br/>Structural novelty flag]
+    C --> F[CRISPR fitness score<br>Essential / Important / Dispensable]
+    D --> G[Invasion probability<br>Compartment prediction]
+    E --> H[Top 3 similar known proteins<br>Structural novelty flag]
 ```
 
 ## Performance
