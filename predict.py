@@ -35,6 +35,37 @@ INVASION_COMPARTMENTS = {
     "IMC", "apical 1", "apical 2",
 }
 
+# Keywords identifying parasitism-specific invasion proteins (ROPKs, MICs, etc.)
+# vs conserved alveolate proteins that happen to reside in invasion compartments
+PARASITE_SPECIFIC_KEYWORDS = [
+    "rhoptry protein rop", "rhoptry kinase", "ropk",
+    "dense granule protein gra", "dense granule protein dg",
+    "microneme protein mic", "microneme protein",
+    "ama1", "apical membrane antigen",
+    "rhoptry neck protein ron", "ron ",
+    "toxofilin", "perforin", "saga", "sag1", "sag2",
+    "surface antigen",
+]
+CONSERVED_ALVEOLATE_KEYWORDS = [
+    "calmodulin", "centrin", "myosin", "tubulin", "alveolin",
+    "hsp", "actin", "histone", "ribosom", "proteasome",
+    "ubiquitin", "ef hand", "ef-hand", "calcium-binding",
+    "kinase", "phosphatase", "atpase", "cyclophilin",
+    "thioredoxin", "trx", "enolase", "aldolase",
+]
+
+
+def classify_match_specificity(description):
+    """Classify whether a T. gondii match is parasite-specific or conserved."""
+    d = str(description).lower()
+    if any(kw in d for kw in PARASITE_SPECIFIC_KEYWORDS):
+        return "parasite_specific"
+    if any(kw in d for kw in CONSERVED_ALVEOLATE_KEYWORDS):
+        return "conserved"
+    if "hypothetical" in d or d in ("", "nan", "?"):
+        return "unknown"
+    return "unclassified"
+
 
 def load_esm2_model():
     """Load ESM-2 650M model via the esm package."""
@@ -322,6 +353,7 @@ def main():
 
     # ─── Structural context from reference database ───
     ref_context = {}
+    contrastive_scores = np.full(len(X), np.nan)
     if has_reference:
         print("Loading reference database...")
         ref_data = np.load(reference_path, allow_pickle=True)
@@ -333,10 +365,25 @@ def main():
         ref_norms = np.linalg.norm(ref_embs, axis=1, keepdims=True)
         ref_normed = ref_embs / (ref_norms + 1e-10)
 
+        # Split reference into invasion vs non-invasion
+        ref_inv_mask = np.array([c in INVASION_COMPARTMENTS for c in ref_comps])
+        ref_noninv_mask = ~ref_inv_mask
+        inv_normed = ref_normed[ref_inv_mask]
+        noninv_normed = ref_normed[ref_noninv_mask]
+
         # Batch cosine similarity
         X_norms = np.linalg.norm(X, axis=1, keepdims=True)
         X_normed = X / (X_norms + 1e-10)
         sim_matrix = X_normed @ ref_normed.T  # (n_query, n_ref)
+
+        # Contrastive scoring: max similarity to invasion minus
+        # max similarity to non-invasion. Positive = specifically
+        # invasion-like beyond general structural similarity.
+        inv_sims = X_normed @ inv_normed.T      # (n_query, n_inv)
+        noninv_sims = X_normed @ noninv_normed.T  # (n_query, n_noninv)
+        max_inv_sim = inv_sims.max(axis=1)
+        max_noninv_sim = noninv_sims.max(axis=1)
+        contrastive_scores = max_inv_sim - max_noninv_sim
 
         for i, sid in enumerate(seq_ids):
             sims = sim_matrix[i]
@@ -397,13 +444,34 @@ def main():
             "compartment_confidence": (round(float(comp_confidence[i]), 3)
                                        if not np.isnan(comp_confidence[i]) else ""),
             "invasion_probability": round(inv_prob, 3) if not np.isnan(inv_prob) else "",
-            "predicted_invasion": ("yes" if inv_prob > 0.5
+            "contrastive_score": (round(float(contrastive_scores[i]), 4)
+                                  if not np.isnan(contrastive_scores[i]) else ""),
+            "predicted_invasion": ("yes" if (inv_prob > 0.5
+                                             and contrastive_scores[i] > 0)
                                    else ("no" if not np.isnan(inv_prob) else "")),
         }
 
-        # Structural context
+        # Structural context + specificity
         if sid in ref_context:
             row.update(ref_context[sid])
+            # Classify whether the top match is parasite-specific or conserved
+            top_desc = ref_context[sid].get("similar_1_desc", "")
+            top_comp = ref_context[sid].get("similar_1_compartment", "")
+            match_type = classify_match_specificity(top_desc)
+            row["match_specificity"] = match_type
+
+            # Invasion-specific flag: only "yes" if the protein matches a
+            # parasite-specific invasion protein, not a conserved alveolate
+            # protein that happens to be in an invasion compartment
+            if inv_prob > 0.5 and match_type == "parasite_specific":
+                row["invasion_specific"] = "yes"
+            elif inv_prob > 0.5 and top_comp in INVASION_COMPARTMENTS:
+                row["invasion_specific"] = "conserved_match"
+            else:
+                row["invasion_specific"] = "no"
+        else:
+            row["match_specificity"] = ""
+            row["invasion_specific"] = ""
 
         results.append(row)
 
@@ -426,7 +494,11 @@ def main():
         print(f"  High-confidence calls: {n_hi}")
     if has_compartment or has_invasion:
         n_inv = (df["predicted_invasion"] == "yes").sum()
-        print(f"  Predicted invasion:    {n_inv}")
+        n_specific = (df.get("invasion_specific") == "yes").sum()
+        n_conserved = (df.get("invasion_specific") == "conserved_match").sum()
+        print(f"  Predicted invasion (all):       {n_inv}")
+        print(f"    Parasite-specific matches:    {n_specific}")
+        print(f"    Conserved alveolate matches:  {n_conserved}")
     if has_compartment:
         top_comps = df["predicted_compartment"].value_counts().head(5)
         print(f"  Top predicted compartments:")
