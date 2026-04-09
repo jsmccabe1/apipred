@@ -84,16 +84,23 @@ def clean_sequence(seq):
     return "".join(c if c in VALID_AA else "X" for c in seq)
 
 
-def _build_windows(sequences, max_len, overlap):
+def _split_sequences(sequences, max_len, overlap):
+    """Partition cleaned sequences into single-window and multi-window groups.
+
+    Single-window proteins (len <= max_len) need no per-residue accumulator;
+    they can be embedded and reduced to a mean vector inside one batch.
+
+    Multi-window proteins (len > max_len) are split into overlapping windows
+    here so each one can be processed as a self-contained group of windows
+    (avoids holding per-residue accumulators for long-running batches).
+
+    Returns:
+        singles: list of (sid, length, seq), one per short protein
+        multis: list of (sid, length, [(start, end, win_seq), ...])
+        n_skipped: count of sequences shorter than 10 aa
     """
-    Split each sequence into ≤max_len windows with `overlap` residues of
-    overlap between adjacent windows. Returns:
-        parents: {sid: {"length": L, "residue_sum": None, "counts": zeros(L)}}
-        windows: list of (sid, start, end, window_seq), one entry per window
-        n_skipped: count of sequences too short to embed
-    """
-    parents = {}
-    windows = []
+    singles = []
+    multis = []
     n_skipped = 0
     stride = max_len - overlap
 
@@ -102,50 +109,131 @@ def _build_windows(sequences, max_len, overlap):
         if len(seq) < 10:
             n_skipped += 1
             continue
-        parents[sid] = {"length": len(seq), "residue_sum": None,
-                        "counts": torch.zeros(len(seq))}
         if len(seq) <= max_len:
-            windows.append((sid, 0, len(seq), seq))
+            singles.append((sid, len(seq), seq))
         else:
+            wins = []
             pos = 0
             while pos < len(seq):
                 end = min(pos + max_len, len(seq))
-                windows.append((sid, pos, end, seq[pos:end]))
+                wins.append((pos, end, seq[pos:end]))
                 if end == len(seq):
                     break
                 pos += stride
+            multis.append((sid, len(seq), wins))
 
-    return parents, windows, n_skipped
+    return singles, multis, n_skipped
 
 
-def _process_window_batch(batch, parents, model, batch_converter, device,
-                          layers):
-    """Run one true batched ESM-2 forward pass over `batch` windows.
+def _esm_forward(seqs, model, batch_converter, device, layers):
+    """Run one batched ESM-2 forward pass; return CPU per-residue layer-mean tensor.
 
-    Each window's per-residue embedding (mean across the 4 layers) is added
-    to the residue_sum of its parent protein at positions [start:end], with
-    counts incremented so overlap regions get averaged correctly later.
+    Output shape: (batch, max_tokens, dim).
     """
-    data = [(f"w{j}", w[3]) for j, w in enumerate(batch)]
+    data = [(f"w{j}", s) for j, s in enumerate(seqs)]
     _, _, batch_tokens = batch_converter(data)
     batch_tokens = batch_tokens.to(device)
-
     with torch.no_grad():
-        out = model(batch_tokens, repr_layers=list(layers),
-                    return_contacts=False)
+        out = model(batch_tokens, repr_layers=list(layers), return_contacts=False)
+    return torch.stack([out["representations"][l] for l in layers]).mean(dim=0).cpu()
 
-    # (n_layers, batch, max_tokens, dim) -> mean over layers -> (batch, max_tokens, dim)
-    mean_rep = torch.stack([out["representations"][l] for l in layers]).mean(dim=0).cpu()
 
-    for j, (sid, start, end, win_seq) in enumerate(batch):
-        win_len = len(win_seq)
-        # Tokens [1, 1+win_len) are the actual residues (BOS at 0, EOS at 1+win_len)
-        win_emb = mean_rep[j, 1:win_len + 1, :]
-        info = parents[sid]
-        if info["residue_sum"] is None:
-            info["residue_sum"] = torch.zeros(info["length"], win_emb.shape[1])
-        info["residue_sum"][start:end] += win_emb
-        info["counts"][start:end] += 1
+def _embed_singles(singles, embeddings, model, batch_converter, device, layers,
+                   batch_size, n_total_windows, n_done_ref, t0):
+    """Embed all single-window proteins with adaptive batching.
+
+    Each protein's embedding is computed and stored eagerly inside the batch
+    that contains it, so no per-residue tensor outlives one forward pass.
+    """
+    # Length-sort so each batch has similar-length sequences (less padding waste).
+    singles.sort(key=lambda x: x[1])
+    cur_batch = batch_size
+    i = 0
+    while i < len(singles):
+        batch = singles[i:i + cur_batch]
+        seqs = [s for _, _, s in batch]
+        try:
+            mean_rep = _esm_forward(seqs, model, batch_converter, device, layers)
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+            if ("out of memory" in msg or "cuda" in msg) and cur_batch > 1:
+                cur_batch = max(1, cur_batch // 2)
+                continue
+            # Single-sequence failure: drop and continue.
+            sid = batch[0][0]
+            embeddings.pop(sid, None)
+            i += 1
+            n_done_ref[0] += 1
+            continue
+
+        for j, (sid, win_len, _) in enumerate(batch):
+            # Tokens [1, 1+win_len) are the residues; mean over residues for the protein vector.
+            embeddings[sid] = mean_rep[j, 1:win_len + 1, :].mean(dim=0).numpy()
+
+        i += len(batch)
+        n_done_ref[0] += len(batch)
+        elapsed = time.time() - t0
+        rate = n_done_ref[0] / elapsed if elapsed > 0 else 0
+        eta = (n_total_windows - n_done_ref[0]) / rate if rate > 0 else 0
+        print(f"\r  [{n_done_ref[0]}/{n_total_windows} windows, batch={cur_batch}] "
+              f"{rate:.1f} win/s ETA {eta:.0f}s", end="", flush=True)
+
+
+def _embed_multis(multis, embeddings, model, batch_converter, device, layers,
+                  n_total_windows, n_done_ref, t0):
+    """Embed long proteins one at a time, finalising each before moving on.
+
+    All windows of one protein go in a single batched forward pass, then
+    overlap regions are averaged per residue, then the protein vector is the
+    mean over all residues. Matches scripts/01_generate_embeddings.py exactly.
+    The per-residue accumulator lives only for one protein at a time.
+    """
+    for sid, length, wins in multis:
+        seqs = [w[2] for w in wins]
+        try:
+            mean_rep = _esm_forward(seqs, model, batch_converter, device, layers)
+        except RuntimeError as e:
+            msg = str(e).lower()
+            if device == "cuda":
+                torch.cuda.empty_cache()
+            # Long protein OOM: try one window at a time
+            if "out of memory" in msg or "cuda" in msg:
+                try:
+                    chunks = []
+                    for s in seqs:
+                        chunks.append(_esm_forward([s], model, batch_converter,
+                                                   device, layers))
+                    # Pad chunks to common width and stack so the per-window loop below works.
+                    max_t = max(c.shape[1] for c in chunks)
+                    padded = torch.zeros(len(chunks), max_t, chunks[0].shape[2])
+                    for k, c in enumerate(chunks):
+                        padded[k, :c.shape[1], :] = c[0]
+                    mean_rep = padded
+                except RuntimeError:
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                    n_done_ref[0] += len(wins)
+                    continue
+            else:
+                raise
+
+        residue_sum = torch.zeros(length, mean_rep.shape[2])
+        counts = torch.zeros(length)
+        for j, (start, end, win_seq) in enumerate(wins):
+            win_len = len(win_seq)
+            residue_sum[start:end] += mean_rep[j, 1:win_len + 1, :]
+            counts[start:end] += 1
+        residue_emb = residue_sum / counts.unsqueeze(1).clamp(min=1)
+        embeddings[sid] = residue_emb.mean(dim=0).numpy()
+
+        n_done_ref[0] += len(wins)
+        elapsed = time.time() - t0
+        rate = n_done_ref[0] / elapsed if elapsed > 0 else 0
+        eta = (n_total_windows - n_done_ref[0]) / rate if rate > 0 else 0
+        print(f"\r  [{n_done_ref[0]}/{n_total_windows} windows, multi-window phase] "
+              f"{rate:.1f} win/s ETA {eta:.0f}s", end="", flush=True)
 
 
 def embed_proteome(sequences, model, alphabet, batch_converter,
@@ -153,66 +241,35 @@ def embed_proteome(sequences, model, alphabet, batch_converter,
                    max_len=1022, overlap=200):
     """Embed all sequences with true batched ESM-2 inference.
 
-    Windows from all proteins are pooled, sorted by length (so similar-length
-    windows batch together with minimal padding waste), then processed in true
-    GPU batches. Per-residue overlap regions are averaged before the final
-    residue mean, matching the training pipeline at
+    Two-phase: long proteins (>max_len aa) are processed first, one protein
+    at a time, with all their windows in a single batched forward pass and
+    immediate overlap-averaged finalisation. Then short proteins go through
+    a length-sorted batched pipeline with eager per-protein mean reduction.
+    Peak CPU memory is bounded by one batch's activations plus the final
+    embeddings dict, regardless of proteome size.
+
+    Per-residue overlap regions are averaged before the final residue mean,
+    matching the training pipeline at
     Apicomplexa/scripts/01_generate_embeddings.py.
-
-    Falls back to a smaller batch_size on OOM, halving until it fits or until
-    a single window OOMs (in which case that protein is dropped).
     """
-    parents, windows, n_skipped = _build_windows(sequences, max_len, overlap)
-    n_total = len(parents)
-    n_total_windows = len(windows)
-
-    # Sort windows by length so each batch has similar-length sequences
-    # (less padding -> faster + less memory).
-    windows.sort(key=lambda w: len(w[3]))
+    singles, multis, n_skipped = _split_sequences(sequences, max_len, overlap)
+    n_singles = len(singles)
+    n_multis = len(multis)
+    n_total = n_singles + n_multis
+    n_total_windows = n_singles + sum(len(w[2]) for w in multis)
 
     embeddings = {}
-    n_failed = n_skipped
-    cur_batch = batch_size
+    n_done_ref = [0]
     t0 = time.time()
-    i = 0
-    n_done = 0
 
-    while i < len(windows):
-        batch = windows[i:i + cur_batch]
-        try:
-            _process_window_batch(batch, parents, model, batch_converter,
-                                  device, layers)
-        except RuntimeError as e:
-            msg = str(e).lower()
-            is_oom = "out of memory" in msg or "cuda" in msg
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            if is_oom and cur_batch > 1:
-                cur_batch = max(1, cur_batch // 2)
-                continue
-            # Single-window failure: drop that protein and move on
-            sid = batch[0][0]
-            parents.pop(sid, None)
-            n_failed += 1
-            i += 1
-            continue
+    if n_multis:
+        _embed_multis(multis, embeddings, model, batch_converter, device, layers,
+                      n_total_windows, n_done_ref, t0)
+    if n_singles:
+        _embed_singles(singles, embeddings, model, batch_converter, device, layers,
+                       batch_size, n_total_windows, n_done_ref, t0)
 
-        i += len(batch)
-        n_done += len(batch)
-        elapsed = time.time() - t0
-        rate = n_done / elapsed if elapsed > 0 else 0
-        eta = (n_total_windows - n_done) / rate if rate > 0 else 0
-        print(f"\r  [{n_done}/{n_total_windows} windows, batch={cur_batch}] "
-              f"{rate:.1f} win/s ETA {eta:.0f}s", end="", flush=True)
-
-    # Aggregate per-protein: average overlap regions then take residue mean
-    for sid, info in parents.items():
-        if info["residue_sum"] is None:
-            n_failed += 1
-            continue
-        residue_emb = info["residue_sum"] / info["counts"].unsqueeze(1).clamp(min=1)
-        embeddings[sid] = residue_emb.mean(dim=0).numpy()
-
+    n_failed = n_skipped + (n_total - len(embeddings))
     elapsed = time.time() - t0
     print(f"\r  Embedded {len(embeddings)}/{n_total} proteins "
           f"in {elapsed:.1f}s ({n_failed} failed)         ")
