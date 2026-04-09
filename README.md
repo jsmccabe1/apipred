@@ -79,8 +79,8 @@ Each protein gets: predicted compartment (25-class), essentiality confidence (en
 ## Installation
 
 ```bash
-git clone https://github.com/jsmccabe1/apipred.git
-cd apipred
+git clone https://github.com/jsmccabe1/ApiPred.git
+cd ApiPred
 pip install -r requirements.txt
 ```
 
@@ -163,7 +163,7 @@ Generates three files in `models/`:
 
 If you use ApiPred, please cite:
 
-> McCabe, JS. (2026) ApiPred: subcellular proteomics prediction for Apicomplexa using protein language model embeddings. https://github.com/jsmccabe1/apipred
+> McCabe, JS. (2026) ApiPred: subcellular proteomics prediction for Apicomplexa using protein language model embeddings. https://github.com/jsmccabe1/ApiPred
 
 And the underlying data sources:
 - Lin Z et al. (2023) Evolutionary-scale prediction of atomic-level protein structure with a language model. *Science* 379:1123-1130.
