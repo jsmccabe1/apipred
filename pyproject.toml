@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "apipred"
-version = "1.1.0"
+version = "1.2.0"
 description = "Predict fitness, compartments, and invasion machinery in apicomplexan proteomes from ESM-2 embeddings."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -38,6 +38,7 @@ Issues = "https://github.com/jsmccabe1/ApiPred/issues"
 
 [project.scripts]
 apipred = "predict:main"
+apipred-extract = "extract:main"
 
 [tool.setuptools]
-py-modules = ["predict", "train_model"]
+py-modules = ["predict", "train_model", "extract"]
